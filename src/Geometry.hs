@@ -4,15 +4,17 @@
 
 module Geometry
     ( QuadFace (..), TriFace (..)
-    , Line
-    , linkLines, endpointsOf, lineOf, lineSingleton, lineReverse
+    , Line, Patch
+    , facesFromPatches, facesFromPatch, patchFromLoop, isClosedLoop
+    , connectLines, linkLines
+    , endpointsOf, lineOf, lineSingleton, lineReverse
     , intersectionsOf
     , Point (..), Vertex (..), Normal (..)
     , Face (..)
     , Pos3D (..)
     , Norm3D (..)
     , Vec3D (..)
-    , planarAngle, faceNormal, vecAngle
+    , planarAngle, faceNormal, vecAngle, midPointOf, centerOf
     ) where
 
 import Relude
@@ -36,20 +38,25 @@ data UnitPlane
 
 -- | A point in 3D space with both a normal vector and position.
 data Point n = Point (Vertex n) (Normal n)
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 -- | A position in 3D space.
 data Vertex n = Vertex n n n
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 -- | A 3D normal vector.
 data Normal n = Normal n n n
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 -- | A line, as defined by discrete linear segments. Any two adjacent points in the line will
 -- connect to form a line segment, the sum of which produce the line.
 data Line p = Line p (NonEmpty p)
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
+
+-- | A closed loop describing a two dimensional shape made up of straight sides. This shape may or
+-- may not reside on a flat plane.
+data Patch p = Patch p (Line p)
+    deriving (Show, Eq, Ord)
 
 class Pos3D n p => Face n p f | f -> p where
 
@@ -78,6 +85,7 @@ class Vec3D n a => Norm3D n a | a -> n where
 
 -- | A typeclass for types which represent or hold a position in three-dimensional space.
 class Vec3D n p => Pos3D n p | p -> n where
+
     -- | Yields the given `Pos3D`'s coordinates as projected onto the given `UnitPlane`. The items
     -- of the yielded tuple corrospond to the components of the given plane in the same position, 
     -- i.e. `XYPlane` -> (x, y).
@@ -123,6 +131,44 @@ class Floating n => Vec3D n v | v -> n where
     magnitude :: v -> n
     magnitude v = sqrt $ (xcomp v ** 2) + (ycomp v ** 2) + (zcomp v ** 2)
 
+facesFromPatches :: (Vec3D n p) => [Patch p] -> [QuadFace p]
+facesFromPatches ls = concat $ mapMaybe facesFromPatch ls
+
+facesFromPatch :: (Vec3D n p) => Patch p -> Maybe [QuadFace p]
+facesFromPatch patch = case patchPerimeter patch + 1 `mod` 2 of
+    0 -> facesFromOutline center (toList $ pointsOf patch)
+    _ -> facesFromOutline center (intersperseMidpoints $ toList $ pointsOf patch)
+  where
+    center = centerOf (pointsOf patch)
+
+-- | Takes a `Line`, presumed to be a closed loop such that its two endpoints are equal, and
+-- produces `QuadFaces` that would make up the shape outlines by the given `Line`.
+facesFromOutline :: p -> [p] -> Maybe [QuadFace p]
+facesFromOutline center (p : p' : p'' : ps) = case facesFromOutline center (p'' : ps) of
+    Nothing -> Just [QuadFace p p' p'' center]
+    Just next -> Just $ QuadFace p p' p'' center : next
+facesFromOutline _ _ = Nothing
+
+-- | Places a midpoint between every two point in the given `Line`.
+intersperseMidpoints :: (Vec3D n p) => [p] -> [p]
+intersperseMidpoints [] = []
+intersperseMidpoints [p] = [p]
+intersperseMidpoints (p : p' : ps) = p : midPointOf p p' : p' : intersperseMidpoints (p' : ps)
+
+-- | True if the given `Line` starts where it ends.
+isClosedLoop :: Eq p => Line p -> Bool
+isClosedLoop l = a == b
+  where
+    (a, b) = endpointsOf l
+
+-- | Maximally connect lines to eachother.
+connectLines :: Eq p => [Line p] -> [Line p]
+connectLines [] = []
+connectLines [l] = [l]
+connectLines (l:ls) = connectLines (mapMaybe (linkLines l) ls) ++ connectLines nonConnect
+  where
+    nonConnect = filter (isNothing . linkLines l) ls
+
 -- | Append one `Line` onto the other if they have matching endpoints. This function may reverse the
 -- direction of one of the given `Line`s, and will not necessarily make a line starting with the
 -- first given `Line`.
@@ -149,9 +195,24 @@ lineReverse (Line p0 (p :| ps)) = case lineOf ps of
     Just l -> lineAppend (lineReverse l) $ Line p (p0 :| [])
     Nothing -> Line p (p0 :| [])
 
+-- | Creates a `Patch` from a `Line` if that `Line` has at least three points and starts where it
+-- ends.
+patchFromLoop :: Eq p => Line p -> Maybe (Patch p)
+patchFromLoop l@(Line p (p' :| (p'' : ps)))
+    | isClosedLoop l = Just $ Patch p (Line p' (p'' :| ps))
+patchFromLoop _ = Nothing
+
 -- | Yields the first and last points of a `Line`.
 endpointsOf :: Line p -> (p, p)
 endpointsOf (Line p ps) = (p, last ps)
+
+-- | Yields the midpoint of the two given vectors.
+midPointOf :: (Vec3D n v) => v -> v -> v
+midPointOf a b = vecScale (vecAdd a b) 0.5
+
+-- | Yields the midpoint of the two given vectors.
+centerOf :: (Vec3D n v) => NonEmpty v -> v
+centerOf (p :| ps) = vecScale (foldr vecAdd p ps) (1.0 / fromIntegral (1 + length ps))
 
 -- | Creates a `Line` from a `List`, yielding `Nothing` if the `List` does not contain two or more
 -- points.
@@ -260,6 +321,27 @@ mostVariedPlane f
     dx = maximum xs - minimum xs
     dy = maximum ys - minimum ys
     dz = maximum zs - minimum zs
+
+-- | Creates a `NonEmpty` list of points from the given line.
+lineToNonEmpty :: Line p -> NonEmpty p
+lineToNonEmpty (Line p ps) = p :| toList ps
+
+-- | Creates a `List` of points from the given line.
+lineToList :: Line p -> [p]
+lineToList (Line p ps) = p : toList ps
+
+-- | Gives the length of a line in points.
+lineLength :: Line p -> Int
+lineLength = length . lineToList
+
+-- | Gives a list of the points in the given `Patch`. This list's head will be the start/end point,
+-- and the start/end point will appear once again at the very end of the `NonEmpty`.
+pointsOf :: Patch p -> NonEmpty p
+pointsOf (Patch p l) = p :| (lineToList l ++ [p])
+
+-- | Gets the perimeter of a `Patch` in number of piecewise segments.
+patchPerimeter :: Patch p -> Int
+patchPerimeter = length . pointsOf
 
 instance Pos3D n p => Face n p (TriFace p) where
   facePoints (TriFace a b c) = [a, b, c]

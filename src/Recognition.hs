@@ -17,24 +17,24 @@ import Data.List (delete)
 -- | Describes a 3D model's mesh not only by its `Face`s, but also the way in which those `Face`s
 -- connect.
 data Mesh f = Mesh f [Mesh f]
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 -- | A edge between mesh `Face`s.
 data MMeshEdge n p f = MMeshEdge n (p, p) (MMeshFace n p f)
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 -- | A mesh `Face` linked by `MMeshEdge`s.
 data MMeshFace n p f = MMeshFace f [MMeshEdge n p f]
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 -- | An edge and an angle, presumably from the two faces that met on that edge.
 data WeightedEdge n p = WeightedEdge n (p, p)
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 -- | Connects `WeightedEdge`s together to form `Line`s, each of which must contain segments sourced
 -- from `WeightedEdge`s with a weight greater than or equal to the given weight.
-connectEdges :: Ord n => [WeightedEdge n p] -> n -> [Line p]
-connectEdges edges minWeight = []
+connectEdges :: (Eq p, Ord n) => [WeightedEdge n p] -> n -> [Line p]
+connectEdges edges minWeight = connectLines ls
   where
     mainEdges = filter (\(WeightedEdge w _) -> w >= minWeight) edges
     ls = fmap (\(WeightedEdge _ (p0, p)) -> lineSingleton p0 p) mainEdges

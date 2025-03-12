@@ -11,7 +11,7 @@ import Geometry
 main :: IO ()
 main = do
     [filePath] <- getArgs
-    (obj :: [TriFace (Vertex Double)]) <- parseObj filePath 
+    (obj :: [TriFace (Vertex Double)]) <- parseObj filePath
     putStrLn $ show (length obj) ++ " faces"
     let mesh = viaNonEmpty tileFaces obj
     print $ meshLevels <$> mesh
@@ -19,5 +19,8 @@ main = do
     let mapped = mapMesh <$> mesh
     let edges = collectEdges <$> mapped
     print $ length <$> edges
-    -- let pruned = fmap (pruneMesh 45.0 []) mapped
-    -- print pruned
+    let ls = (`connectEdges` (45 / 180 * pi)) <$> edges
+    print $ fmap isClosedLoop <$> ls
+    let patches = mapMaybe patchFromLoop <$> ls
+    let faces = facesFromPatches <$> patches
+    print $ length <$> faces
