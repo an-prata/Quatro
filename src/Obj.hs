@@ -5,13 +5,46 @@
 module Obj
     ( parseObj
     , parseTriFace
+    , writeQuads, writeEdges
     ) where
 
 import Relude
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Read as TR
+import qualified Data.Set as Set
 import Geometry
+import Data.List (elemIndex)
+
+writeEdges :: (Ord a, Show a) => [(Vertex a, Vertex a)] -> Text
+writeEdges es = shownPoints `T.append` edges
+  where
+    points = Set.fromList (concatMap (\(a, b) -> [a, b]) es)
+    pointsList = toList points
+    shownPoints = T.concat $ fmap (\(Vertex x y z)
+        -> "v " `T.append` T.unwords [show x, show y, show z] `T.append` "\n") pointsList
+    edges = T.concat $ mapMaybe (\(a, b) -> do
+        a' <- elemIndex a pointsList
+        b' <- elemIndex b pointsList
+        return $ "l " `T.append` T.unwords [show a', show b'] `T.append` "\n")
+        es
+
+writeQuads :: (Ord a, Show a) => [QuadFace (Vertex a)] -> Text
+writeQuads qs = shownPoints `T.append` shownFaces
+  where
+    points = Set.fromList (concatMap (\(QuadFace a b c d) -> [a, b, c, d]) qs)
+    pointsList = toList points
+    shownPoints = T.concat $ fmap (\(Vertex x y z)
+        -> "v " `T.append` T.unwords [show x, show y, show z] `T.append` "\n") pointsList
+    faces = mapMaybe (\(QuadFace a b c d) -> do
+        a' <- elemIndex a pointsList
+        b' <- elemIndex b pointsList
+        c' <- elemIndex c pointsList
+        d' <- elemIndex d pointsList
+        return (QuadFace a' b' c' d'))
+        qs
+    shownFaces = T.concat $ fmap (\(QuadFace a b c d)
+        -> "f " `T.append` T.unwords [show a, show b, show c, show d] `T.append` "\n") faces
 
 -- | Parse an OBJ file, assuming faces are triangular.
 parseObj :: Fractional a => FilePath -> IO [TriFace (Vertex a)]

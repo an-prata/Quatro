@@ -9,6 +9,7 @@ module Geometry
     , connectLines, linkLines
     , endpointsOf, lineOf, lineSingleton, lineReverse
     , intersectionsOf
+    , minimizePatches
     , Point (..), Vertex (..), Normal (..)
     , Face (..)
     , Pos3D (..)
@@ -19,15 +20,16 @@ module Geometry
 
 import Relude
 import Data.Foldable (maximum, minimum)
-import Data.List ((!!))
+import Data.List ((!!), nub, minimumBy, (\\))
+import GHC.OldList (deleteBy)
 
 -- | A discrete triangular mesh face defined by its three vertices.
 data TriFace p = TriFace p p p
-    deriving (Show, Eq)
+    deriving Show
 
 -- | A discrete quadrilateral mesh face defined by its four vertices.
 data QuadFace p = QuadFace p p p p
-    deriving (Show, Eq)
+    deriving Show
 
 -- | A plane established by being perpendicular to a unit vector.
 data UnitPlane
@@ -51,12 +53,12 @@ data Normal n = Normal n n n
 -- | A line, as defined by discrete linear segments. Any two adjacent points in the line will
 -- connect to form a line segment, the sum of which produce the line.
 data Line p = Line p (NonEmpty p)
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq)
 
 -- | A closed loop describing a two dimensional shape made up of straight sides. This shape may or
 -- may not reside on a flat plane.
 data Patch p = Patch p (Line p)
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq)
 
 class Pos3D n p => Face n p f | f -> p where
 
@@ -131,22 +133,25 @@ class Floating n => Vec3D n v | v -> n where
     magnitude :: v -> n
     magnitude v = sqrt $ (xcomp v ** 2) + (ycomp v ** 2) + (zcomp v ** 2)
 
-facesFromPatches :: (Vec3D n p) => [Patch p] -> [QuadFace p]
-facesFromPatches ls = concat $ mapMaybe facesFromPatch ls
+facesFromPatches :: (Eq p, Vec3D n p) => [Patch p] -> [QuadFace p]
+facesFromPatches ls = nub $ concat $ mapMaybe facesFromPatch ls
 
 facesFromPatch :: (Vec3D n p) => Patch p -> Maybe [QuadFace p]
-facesFromPatch patch = case patchPerimeter patch + 1 `mod` 2 of
-    0 -> facesFromOutline center (toList $ pointsOf patch)
-    _ -> facesFromOutline center (intersperseMidpoints $ toList $ pointsOf patch)
-  where
-    center = centerOf (pointsOf patch)
+facesFromPatch patch = makeQuads $ toList (pointsOf patch)
+
+-- | Creates quads given an outline of points. Assumes that the start and end point are equal.
+makeQuads :: (Vec3D n p) => [p] -> Maybe [QuadFace p]
+makeQuads [a, b, c, d, _] = Just [QuadFace a b c d]
+makeQuads ps | length ps `mod` 2 == 1 = viaNonEmpty centerOf ps >>= (`facesFromOutline` ps)
+makeQuads ps = viaNonEmpty centerOf ps >>= (`facesFromOutline` intersperseMidpoints ps)
 
 -- | Takes a `Line`, presumed to be a closed loop such that its two endpoints are equal, and
 -- produces `QuadFaces` that would make up the shape outlines by the given `Line`.
 facesFromOutline :: p -> [p] -> Maybe [QuadFace p]
-facesFromOutline center (p : p' : p'' : ps) = case facesFromOutline center (p'' : ps) of
-    Nothing -> Just [QuadFace p p' p'' center]
-    Just next -> Just $ QuadFace p p' p'' center : next
+facesFromOutline center [p, p', p''] = Just [QuadFace p p' p'' center]
+facesFromOutline _ [p, p', p'', p''', _] = Just [QuadFace p p' p'' p''']
+facesFromOutline center (p : p' : p'' : ps)
+    = (QuadFace p p' p'' center :) <$> facesFromOutline center (p'' : ps)
 facesFromOutline _ _ = Nothing
 
 -- | Places a midpoint between every two point in the given `Line`.
@@ -165,9 +170,9 @@ isClosedLoop l = a == b
 connectLines :: Eq p => [Line p] -> [Line p]
 connectLines [] = []
 connectLines [l] = [l]
-connectLines (l:ls) = connectLines (mapMaybe (linkLines l) ls) ++ connectLines nonConnect
-  where
-    nonConnect = filter (isNothing . linkLines l) ls
+connectLines (l : ls) = case mapMaybe (linkLines l) ls of
+    [] -> l : ls
+    links -> connectLines links ++ connectLines ls
 
 -- | Append one `Line` onto the other if they have matching endpoints. This function may reverse the
 -- direction of one of the given `Line`s, and will not necessarily make a line starting with the
@@ -201,6 +206,17 @@ patchFromLoop :: Eq p => Line p -> Maybe (Patch p)
 patchFromLoop l@(Line p (p' :| (p'' : ps)))
     | isClosedLoop l = Just $ Patch p (Line p' (p'' :| ps))
 patchFromLoop _ = Nothing
+
+minimizePatches :: Eq p => [Patch p] -> [Patch p]
+minimizePatches [] = []
+minimizePatches (p : ps) = minimumBy compareCandidates candidates : minimizePatches nonCandidates
+  where
+    candidates = p : filter (patchesOverlap p) ps
+    nonCandidates = ps \\ candidates
+    compareCandidates a b = length (pointsOf a) `compare` length (pointsOf b)
+
+patchesOverlap :: Eq p => Patch p -> Patch p -> Bool
+patchesOverlap p p' = length (filter (`notElem` pointsOf p') (toList $ pointsOf p)) > 2
 
 -- | Yields the first and last points of a `Line`.
 endpointsOf :: Line p -> (p, p)
@@ -380,3 +396,16 @@ instance Floating n => Vec3D n (Normal n) where
     ycomp (Normal _ y _) = y
     zcomp (Normal _ _ z) = z
     newVec3D = Normal
+
+instance Eq p => Eq (TriFace p) where
+    (TriFace a b c) == (TriFace a' b' c')
+        = (a == a' && b == b' && c == c')
+        || (a == b' && b == c' && c == a')
+        || (a == c' && b == a' && c == b')
+
+instance Eq p => Eq (QuadFace p) where
+    (QuadFace a b c d) == (QuadFace a' b' c' d')
+        = (a == a' && b == b' && c == c' && d == d')
+        || (a == b' && b == c' && c == d' && d == a')
+        || (a == c' && b == d' && c == a' && d == b')
+        || (a == d' && b == a' && c == b' && d == c')
