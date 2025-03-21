@@ -1,5 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
@@ -13,16 +14,15 @@ main = do
     [filePath] <- getArgs
     (obj :: [TriFace (Vertex Double)]) <- parseObj filePath
     putStrLn $ "Opened OBJ file with " ++ show (length obj) ++ " faces"
-    let mesh = viaNonEmpty tileFaces obj
+    let mesh = fst <$> viaNonEmpty structureMesh obj
     putStrLn $ "Parsed mesh of size " ++ show (meshSize <$> mesh)
-    let mapped = mapMesh <$> mesh
+
+    let mapped = mesh >>= describeMesh
     let edges = collectEdges <$> mapped
     putStrLn $ "Found " ++ show (length <$> edges) ++ " edges"
-    let unweighted = fmap (\(WeightedEdge _ e) -> e) <$> edges
-    forM_ (writeEdges <$> unweighted) putText
-    -- let ls = (`connectEdges` (45 / 180 * pi)) <$> edges
-    -- putStrLn $ "Created " ++ show (length <$> ls) ++ " lines"
-    -- let patches = minimizePatches . mapMaybe patchFromLoop <$> ls
+    let ols = makeOutline (45 / 180 * pi) <$> mapped
+    putStrLn $ "Created " ++ show (length <$> ols) ++ " lines"
+    -- let patches = concatMap (mapMaybe patchFromLoop . outlineStrands) <$> ols
     -- putStrLn $ "Created " ++ show (length <$> patches) ++ " patches"
     -- let faces =  facesFromPatches <$> patches
     -- putStrLn $ "Created " ++ show (length <$> faces) ++ " faces"

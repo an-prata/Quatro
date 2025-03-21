@@ -26,7 +26,7 @@ writeEdges es = shownPoints `T.append` edges
     edges = T.concat $ mapMaybe (\(a, b) -> do
         a' <- elemIndex a pointsList
         b' <- elemIndex b pointsList
-        return $ "l " `T.append` T.unwords [show a', show b'] `T.append` "\n")
+        return $ "l " `T.append` T.unwords [show (a' + 1), show (b' + 1)] `T.append` "\n")
         es
 
 writeQuads :: (Ord a, Show a) => [QuadFace (Vertex a)] -> Text
@@ -43,8 +43,9 @@ writeQuads qs = shownPoints `T.append` shownFaces
         d' <- elemIndex d pointsList
         return (QuadFace a' b' c' d'))
         qs
-    shownFaces = T.concat $ fmap (\(QuadFace a b c d)
-        -> "f " `T.append` T.unwords [show a, show b, show c, show d] `T.append` "\n") faces
+    shownFaces = T.concat $ fmap (\(QuadFace a b c d) -> "f "
+        `T.append` T.unwords [show (a + 1), show (b + 1), show (c + 1), show (d + 1)]
+        `T.append` "\n") faces
 
 -- | Parse an OBJ file, assuming faces are triangular.
 parseObj :: Fractional a => FilePath -> IO [TriFace (Vertex a)]

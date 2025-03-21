@@ -1,13 +1,11 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE BangPatterns #-}
 
 module Recognition
     ( Mesh (..)
-    , MMeshEdge, MMeshFace
-    , WeightedEdge (..)
-    , connectEdges, collectEdges
-    , mapMesh, tileFaces
-    , meshLevels, meshSize
+    , DMeshEdge, DMesh
+    , describeMesh, structureMesh, collectEdges
+    , makeOutline 
+    , meshSize
     ) where
 
 import Relude
@@ -15,97 +13,95 @@ import Geometry
 import Data.List (delete)
 
 -- | Describes a 3D model's mesh not only by its `Face`s, but also the way in which those `Face`s
--- connect.
+-- connect. A properly structured `Mesh` is one in which all branches off of a node are `Faces`
+-- adjacent to said node. This results in a tree in which all connection indicate adjacency or a
+-- shared edge.
 data Mesh f = Mesh f [Mesh f]
     deriving (Eq, Ord, Show)
 
+data Outline p = Outline (p, p) [Outline p]
+    deriving (Eq, Ord, Show)
+
 -- | A edge between mesh `Face`s.
-data MMeshEdge n p f = MMeshEdge n (p, p) (MMeshFace n p f)
+data DMeshEdge n p f = DMeshEdge n (p, p) (DMesh n p f)
     deriving (Eq, Ord, Show)
 
 -- | A mesh `Face` linked by `MMeshEdge`s.
-data MMeshFace n p f = MMeshFace f [MMeshEdge n p f]
+data DMesh n p f = DMesh f [DMeshEdge n p f]
     deriving (Eq, Ord, Show)
 
--- | An edge and an angle, presumably from the two faces that met on that edge.
-data WeightedEdge n p = WeightedEdge n (p, p)
-    deriving (Eq, Ord, Show)
+-- | Creates a `List` of `Outline`s which describe the given `Mesh`. This function seeks to minimize
+-- the number of `Outline`s used.
+makeOutline :: (Eq p, Ord n) => n -> DMesh n p f -> [Outline p]
+makeOutline angle
+    = mapMaybe (pruneOutline <=< viaNonEmpty (fst . structureOutline))
+    . tails
+    . mapMaybe (\(DMeshEdge n (a, b) _) -> if n >= angle then Just (a, b) else Nothing)
+    . collectEdges
 
--- | Connects `WeightedEdge`s together to form `Line`s, each of which must contain segments sourced
--- from `WeightedEdge`s with a weight greater than or equal to the given weight.
-connectEdges :: (Eq p, Ord n) => [WeightedEdge n p] -> n -> [Line p]
-connectEdges edges minWeight = connectLines ls
+-- | Structures an `Outline` tree around the given two-tuple edge. This function seeks to minimize
+-- redundancy and in doing so will create a left heavy tree.
+structureOutline :: Eq p => NonEmpty (p, p) -> (Outline p, [(p, p)])
+structureOutline (edge :| edges) = foldr structureBranch (Outline edge [], edges) adjacent
   where
-    mainEdges = filter (\(WeightedEdge w _) -> w >= minWeight) edges
-    ls = fmap (\(WeightedEdge _ (p0, p)) -> lineSingleton p0 p) mainEdges
+    adjacent = filter (edge `meetsEdge`) edges
+    structureBranch adj (Outline e bs, re)
+        = let (branch, re') = structureOutline (adj :| delete adj re)
+        in (Outline e (branch : bs), re')
 
--- | Map a `Mesh` into a tree structure composed of alternating `MMeshFace`s and `MMeshEdge`s, which
--- describe not only the `Face`s and "shape" of a mesh, but also details the edges in which `Face`s
--- meet.
-mapMesh :: (Face n p f, Eq p) => Mesh f -> MMeshFace n p f
-mapMesh (Mesh face []) = MMeshFace face []
-mapMesh (Mesh face ms) = MMeshFace face $ mapMaybe (mapEdge face . mapMesh) ms
+-- | Removes branches of the given `Outline` which do not form closed loops with the edge at the root
+-- of the `Outline` tree.
+pruneOutline :: Eq p => Outline p -> Maybe (Outline p)
+pruneOutline outline@(Outline top _) = pruneFor top outline
+  where
+    connectsTo e (Outline e' []) = e /= e' && e `meetsEdge` e'
+    connectsTo e (Outline e' ols) = (e /= e' && e `meetsEdge` e') || (e `connectsTo`) `any` ols
 
--- | Creates a `MMeshEdge` which links the given `Face` and `MMeshFace` with their shared edge, if
--- that edge exists.
-mapEdge :: (Face n p f, Eq p) => f -> MMeshFace n p f -> Maybe (MMeshEdge n p f)
-mapEdge f m@(MMeshFace mf _) = (\s -> MMeshEdge (planarAngle f mf) s m) <$> commonFaceEdge f mf
+    pruneFor e (Outline e' _) | e /= e' && e `meetsEdge` e'
+        = Just $ Outline e' []
+    pruneFor e ol@(Outline e' ols) | e `connectsTo` ol
+        = Just $ Outline e' (mapMaybe (pruneFor e) ols)
+    pruneFor _ _ = Nothing
 
--- | Takes a `NonEmpty` list of `Face`s and structures them in a `Mesh`.
-tileFaces :: (Face n p f, Eq f, Eq p) => NonEmpty f -> Mesh f
-tileFaces = head . stepMeshTiling . fmap (`Mesh` [])
+-- | `True` if the two edges meet at either of their endpoints.
+meetsEdge :: Eq p => (p, p) -> (p, p) -> Bool
+meetsEdge (a, b) (a', b') = b == a' || a == b' || a == a' || b == b'
 
--- | Takes a `NonEmpty` list of `Mesh`s and maximally connects them to one another, yielding a list
--- of `Mesh`s which do not connect to eachother. This means that if a closed set of `Face`s are
--- given, the yielded list will be of length one.
-stepMeshTiling :: (Face n p f, Eq f, Eq p) => NonEmpty (Mesh f) -> NonEmpty (Mesh f)
-stepMeshTiling ms@(_ :| []) = ms
-stepMeshTiling ms = case find (not . isLead) ms of
-    Just leader ->
-        let ms' = delete leader (toList ms)
-        in stepMeshTiling (linkMesh leader ms' :| ms')
-    Nothing -> ms
+isCongruent :: Eq p => (p, p) -> (p, p) -> Bool
+isCongruent (a, b) (a', b') = (a == a' && b == b') || (a == b' && b == a')
 
--- | Produces a new `Mesh` with the same `Face` as the one given, but with all `Mesh`s adjacent to
--- it of the ones given appended to its internal `List`.
-linkMesh :: (Face n p f, Eq p) => Mesh f -> [Mesh f] -> Mesh f
-linkMesh (Mesh mf mfs) ms = Mesh mf $ mfs ++ filter (\(Mesh f _) -> hasCommonEdge mf f) ms
+-- | Yields a `DMeshFace` given a `Mesh`, and creates `DMeshEdge`s with the angle betwen the faces
+-- connected by that edge.
+describeMesh :: (Eq p, Face n p f) => Mesh f -> Maybe (DMesh n p f)
+describeMesh (Mesh f ms) = DMesh f <$> describeEdges f ms
 
--- | Yields `True` if the two given `Face`s share an edge with one another.
-hasCommonEdge :: (Face n p f, Eq p) => f -> f -> Bool
-hasCommonEdge !f !f0 = length (filter (`elem` facePoints f) (facePoints f0)) == 2
+describeEdges :: (Eq p, Face n p f) => f -> [Mesh f] -> Maybe [DMeshEdge n p f]
+describeEdges parent = mapM (describeEdge parent)
 
--- | Yields a tuple of two points if one, and only one, common edge exists between the two given
--- faces.
-commonFaceEdge :: (Face n p f, Eq p) => f -> f -> Maybe (p, p)
-commonFaceEdge !f !f0 = case filter (`elem` facePoints f) (facePoints f0) of
-    [a, b] -> Just (a, b)
-    _ -> Nothing
+describeEdge :: (Eq p, Face n p f) => f -> Mesh f -> Maybe (DMeshEdge n p f)
+describeEdge parent mesh@(Mesh f _) = describeMesh mesh
+    >>= \m -> fmap (\e -> DMeshEdge (planarAngle parent f) e m) (commonEdge parent f)
 
--- | Collects all edges between faces in the given `MMeshFace` and yields `WeightedEdge`s containing
--- the two points forming the edge and the angle between the `Face`s that formed the edge.
-collectEdges :: MMeshFace n p f -> [WeightedEdge n p]
-collectEdges (MMeshFace _ edges) = (edgeOf <$> edges) ++ concatMap (collectEdges . faceOf) edges
+-- | Deconstructs a described mesh (`DMeshFace`) and yields all of its contained `DMeshEdge`s.
+collectEdges :: DMesh n p f -> [DMeshEdge n p f]
+collectEdges (DMesh _ es) = concatMap (\edge@(DMeshEdge _ _ f) -> edge : collectEdges f) es
 
--- | Creates a new `WeightedEdge` from the given `MMeshEdge`.
-edgeOf :: MMeshEdge n p f -> WeightedEdge n p
-edgeOf (MMeshEdge theta edge _) = WeightedEdge theta edge
+-- | Take a `NonEmpty` list of `Face`s and structure/organize them in a `Mesh` tree. This function
+-- will yield a two-tuple in which the first item is the newly structured `Mesh` and the second item
+-- is `List` of "remainder" `Face`s, which could not be incorperated into the `Mesh` tree.
+--
+-- The resulting `Mesh` tree will be left heavy, in the sense that the left-most branch will be
+-- maximized, having branches appended to it until no more can, and after the the function moves
+-- from left to right, resulting in all branches to the right being less "filled out" that the ones
+-- to the left.
+structureMesh :: (Eq p, Eq f, Face n p f) => NonEmpty f -> (Mesh f, [f])
+structureMesh (face :| faces) = foldr structureBranch (Mesh face [], faces) adjacent
+  where
+    adjacent = filter (faceIsAdjacent face) faces
+    structureBranch adj (Mesh f bs, re)
+        = let (branch, re') = structureMesh (adj :| delete adj re)
+        in (Mesh f (branch : bs), re')
 
--- | Gets the contained `MMeshFace` of the given `MMeshEdge`.
-faceOf :: MMeshEdge n p f -> MMeshFace n p f
-faceOf (MMeshEdge _ _ f) = f
-
--- | True if the given `Mesh` if a "lead", meaning that it has one or more recorded adjacent
--- `Mesh`s.
-isLead :: Mesh f -> Bool
-isLead (Mesh _ []) = False
-isLead (Mesh _ _) = True
-
--- | Yields the number of recursive steps in the `Mesh` tree when taking the left most branch.
-meshLevels :: Mesh f -> Int
-meshLevels (Mesh _ !ms) = 1 + foldr (\i acc -> acc `max` meshLevels i) 0 ms
-
--- | Yields the number of faces in the mesh.
+-- | Finds the size of the `Mesh` as the number of faces in it, including duplicates.
 meshSize :: Mesh f -> Int
-meshSize (Mesh _ []) = 1
-meshSize (Mesh _ !ms) = 1 + sum (meshSize <$> ms)
+meshSize (Mesh _ ms) = 1 + sum (meshSize <$> ms)
