@@ -1,16 +1,16 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
 module Recognition
-    ( Mesh (..)
-    , DMeshEdge, DMesh
+    ( Mesh (..), Outline (..)
+    , DMeshEdge (..), DMesh
     , describeMesh, structureMesh, collectEdges
-    , makeOutline 
+    , makeOutline, strandsOf, straightenStrand, strandQuads
     , meshSize
     ) where
 
 import Relude
 import Geometry
-import Data.List (delete)
+import Data.List (delete, nub)
 
 -- | Describes a 3D model's mesh not only by its `Face`s, but also the way in which those `Face`s
 -- connect. A properly structured `Mesh` is one in which all branches off of a node are `Faces`
@@ -19,6 +19,8 @@ import Data.List (delete)
 data Mesh f = Mesh f [Mesh f]
     deriving (Eq, Ord, Show)
 
+-- | A branching set of line segments which, if interpereted as lines, would outline an object in 3D
+-- space.
 data Outline p = Outline (p, p) [Outline p]
     deriving (Eq, Ord, Show)
 
@@ -36,6 +38,7 @@ makeOutline :: (Eq p, Ord n) => n -> DMesh n p f -> [Outline p]
 makeOutline angle
     = mapMaybe (pruneOutline <=< viaNonEmpty (fst . structureOutline))
     . tails
+    -- . (fmap reverse . tails . reverse)
     . mapMaybe (\(DMeshEdge n (a, b) _) -> if n >= angle then Just (a, b) else Nothing)
     . collectEdges
 
@@ -54,21 +57,57 @@ structureOutline (edge :| edges) = foldr structureBranch (Outline edge [], edges
 pruneOutline :: Eq p => Outline p -> Maybe (Outline p)
 pruneOutline outline@(Outline top _) = pruneFor top outline
   where
-    connectsTo e (Outline e' []) = e /= e' && e `meetsEdge` e'
-    connectsTo e (Outline e' ols) = (e /= e' && e `meetsEdge` e') || (e `connectsTo`) `any` ols
+    connectsTo e (Outline e' ols) = (e /= e' && e `meetsEdge` e') || ((e `connectsTo`) `any` ols)
 
-    pruneFor e (Outline e' _) | e /= e' && e `meetsEdge` e'
-        = Just $ Outline e' []
     pruneFor e ol@(Outline e' ols) | e `connectsTo` ol
         = Just $ Outline e' (mapMaybe (pruneFor e) ols)
     pruneFor _ _ = Nothing
 
+strandsOf :: Outline p -> [NonEmpty (p, p)]
+strandsOf (Outline top []) = [top :| []]
+strandsOf (Outline top ols) = fmap ((top :|) . toList) (concatMap strandsOf ols)
+
+straightenStrand :: Eq p => NonEmpty (p, p) -> [p]
+straightenStrand es = nub $ concatMap (\(a, b) -> [a, b]) es
+
+strandQuads' :: (Vec3D n p, RealFloat n) => [p] -> [QuadFace p]
+strandQuads' [a, b, c, d]
+    -- Test for coplanarity
+    | abs (((b `vecSub` a) `vecCross` (d `vecSub` a)) `vecDot` (c `vecSub` a)) < 0.001
+        = let q = windQuad a b c d
+        in [q]
+        -- in [q | not (quadSelfIntersects q)]
+    | otherwise = []
+strandQuads' _ = []
+
+windQuad :: (Vec3D n p, RealFloat n) => p -> p -> p -> p -> QuadFace p
+windQuad a b c d = QuadFace i j k l
+  where
+    center = (a `vecAdd` b `vecAdd` c `vecAdd` d) `vecScale` 0.25
+    plane = mostVariedPlane [a, b, c, d]
+    [i, j, k, l] = case plane of
+        XYPlane -> sortOn (\v ->
+            let v' = v `vecSub` center
+            in atan2 (ycomp v') (xcomp v')
+            ) [a, b, c, d]
+        XZPlane -> sortOn (\v ->
+            let v' = v `vecSub` center
+            in atan2 (zcomp v') (xcomp v')
+            ) [a, b, c, d]
+        YZPlane -> sortOn (\v ->
+            let v' = v `vecSub` center
+            in atan2 (zcomp v') (ycomp v')
+            ) [a, b, c, d]
+
+strandQuads :: (Vec3D n p, Eq p, RealFloat n) => [(p, p)] -> [QuadFace p]
+strandQuads ps = concatMap strandQuads'
+    $ mapMaybe (viaNonEmpty straightenStrand)
+    $ filter ((== 4) . length)
+    $ subsequences ps
+
 -- | `True` if the two edges meet at either of their endpoints.
 meetsEdge :: Eq p => (p, p) -> (p, p) -> Bool
 meetsEdge (a, b) (a', b') = b == a' || a == b' || a == a' || b == b'
-
-isCongruent :: Eq p => (p, p) -> (p, p) -> Bool
-isCongruent (a, b) (a', b') = (a == a' && b == b') || (a == b' && b == a')
 
 -- | Yields a `DMeshFace` given a `Mesh`, and creates `DMeshEdge`s with the angle betwen the faces
 -- connected by that edge.

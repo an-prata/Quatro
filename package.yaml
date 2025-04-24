@@ -32,6 +32,8 @@ ghc-options:
 - -Wpartial-fields
 - -Wredundant-constraints
 - -XSafe
+- -O2
+- -threaded
 
 executables:
   Quatro-exe:

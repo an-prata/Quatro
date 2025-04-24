@@ -3,7 +3,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Obj
-    ( parseObj
+    ( uniquePoints
+    , parseObj
     , parseTriFace
     , writeQuads, writeEdges
     ) where
@@ -15,6 +16,9 @@ import qualified Data.Text.Read as TR
 import qualified Data.Set as Set
 import Geometry
 import Data.List (elemIndex)
+
+uniquePoints :: (Face n p f, Ord p) => [f] -> Set p
+uniquePoints = Set.fromList . concatMap facePoints
 
 writeEdges :: (Ord a, Show a) => [(Vertex a, Vertex a)] -> Text
 writeEdges es = shownPoints `T.append` edges
@@ -29,10 +33,10 @@ writeEdges es = shownPoints `T.append` edges
         return $ "l " `T.append` T.unwords [show (a' + 1), show (b' + 1)] `T.append` "\n")
         es
 
-writeQuads :: (Ord a, Show a) => [QuadFace (Vertex a)] -> Text
+writeQuads :: (Ord a, Show a, Floating a) => [QuadFace (Vertex a)] -> Text
 writeQuads qs = shownPoints `T.append` shownFaces
   where
-    points = Set.fromList (concatMap (\(QuadFace a b c d) -> [a, b, c, d]) qs)
+    points = uniquePoints qs
     pointsList = toList points
     shownPoints = T.concat $ fmap (\(Vertex x y z)
         -> "v " `T.append` T.unwords [show x, show y, show z] `T.append` "\n") pointsList
@@ -45,7 +49,8 @@ writeQuads qs = shownPoints `T.append` shownFaces
         qs
     shownFaces = T.concat $ fmap (\(QuadFace a b c d) -> "f "
         `T.append` T.unwords [show (a + 1), show (b + 1), show (c + 1), show (d + 1)]
-        `T.append` "\n") faces
+        `T.append` "\n"
+        ) faces
 
 -- | Parse an OBJ file, assuming faces are triangular.
 parseObj :: Fractional a => FilePath -> IO [TriFace (Vertex a)]

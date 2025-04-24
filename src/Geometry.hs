@@ -9,7 +9,10 @@ module Geometry
     , Pos3D (..)
     , Norm3D (..)
     , Vec3D (..)
-    , planarAngle, faceNormal, vecAngle, midPointOf, centerOf
+    , UnitPlane (..)
+    , planarAngle, faceNormal, vecAngle, vecAngle', midPointOf, centerOf
+    , lineSegmentsIntersect, quadSelfIntersects
+    , mostVariedPlane
     ) where
 
 import Relude
@@ -123,9 +126,9 @@ class Floating n => Vec3D n v | v -> n where
     vecCross :: v -> v -> v
     vecCross v v0 = newVec3D x' y' z'
       where
-        x' = ycomp v * zcomp v0 + zcomp v * ycomp v0
-        y' = zcomp v * xcomp v0 + xcomp v * zcomp v0
-        z' = xcomp v * ycomp v0 + ycomp v * xcomp v0
+        x' = ycomp v * zcomp v0 - zcomp v * ycomp v0
+        y' = zcomp v * xcomp v0 - xcomp v * zcomp v0
+        z' = xcomp v * ycomp v0 - ycomp v * xcomp v0
 
     vecDot :: v -> v -> n
     vecDot v v0 = xcomp v * xcomp v0 + ycomp v * ycomp v0 + zcomp v * zcomp v0
@@ -147,7 +150,60 @@ planarAngle f f0 = vecAngle (faceNormal f) (faceNormal f0)
 
 -- | Gives the angle between two `Vec3D` vectors, in radians.
 vecAngle :: Vec3D n v => v -> v -> n
-vecAngle v v0 = abs (v `vecDot` v0) / (magnitude v * magnitude v0)
+vecAngle v v0 = abs $ acos $ (v `vecDot` v0) / (magnitude v * magnitude v0)
+
+vecAngle' :: Vec3D n v => v -> v -> n
+vecAngle' v v0 = acos $ (v `vecDot` v0) / (magnitude v * magnitude v0)
+
+quadSelfIntersects :: (Vec3D n v, Ord n) => QuadFace v -> Bool
+quadSelfIntersects (QuadFace a b c d)
+    = lineSegmentsIntersect (a, b) (c, d)
+    || lineSegmentsIntersect (b, c) (d, a)
+
+lineSegmentsIntersect :: (Vec3D n v, Ord n) => (v, v) -> (v, v) -> Bool
+lineSegmentsIntersect (a, b) (c, d) = case mostVariedPlane [a, b, c, d] of
+    XYPlane -> segmentsIntersect2
+        (xcomp a, ycomp a) (xcomp b, ycomp b) (xcomp c, ycomp c) (xcomp d, ycomp d)
+    YZPlane -> segmentsIntersect2
+        (ycomp a, zcomp a) (ycomp b, zcomp b) (ycomp c, zcomp c) (ycomp d, zcomp d)
+    XZPlane -> segmentsIntersect2
+        (xcomp a, zcomp a) (xcomp b, zcomp b) (xcomp c, zcomp c) (xcomp d, zcomp d)
+
+-- | Whether or not two line segments, in 2D, meet in the middle of either segment.
+segmentsIntersect2 :: (Ord n, Fractional n) =>(n, n) -> (n, n) -> (n, n) -> (n, n) -> Bool
+segmentsIntersect2 (x1, y1) (x2, y2) (x3, y3) (x4, y4)
+    = (0 < t && t < 1) || (0 < u && u < 1)
+  where
+    tNum = (x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)
+    tDen = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    t = tNum / tDen
+    uNum = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3))
+    uDen = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    u = uNum / uDen
+
+mostVariedPlane :: (Vec3D n v, Ord n) => [v] -> UnitPlane
+mostVariedPlane (firstV:vs)
+    | leastVariedAxis == dx = YZPlane
+    | leastVariedAxis == dy = XZPlane
+    | otherwise = XYPlane
+  where
+    ((xMin', xMax'), (yMin', yMax'), (zMin', zMax'))
+        = foldr (\v ((xMin, xMax), (yMin, yMax), (zMin, zMax))
+            -> let
+                x = xcomp v
+                y = ycomp v
+                z = zcomp v
+            in ((min xMin x, max xMax x), (min yMin y, max yMax y), (min zMin z, max zMax z))
+            )
+            ( (xcomp firstV, xcomp firstV)
+            , (ycomp firstV, ycomp firstV)
+            , (zcomp firstV, zcomp firstV)
+            ) vs
+    dx = xMax' - xMin'
+    dy = yMax' - yMin'
+    dz = zMax' - zMin'
+    leastVariedAxis = min (min dx dy) dz
+mostVariedPlane _ = XYPlane
 
 -- | Calculates the `Normal` normal vector to the plane of the given `Face`.
 faceNormal :: Face n p f => f -> Normal n
